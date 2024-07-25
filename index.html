@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Speech Streaming</title>
+</head>
+<body>
+    <h1>Speech Streaming</h1>
+    <div id="content"></div>
+    <script>
+        var source = new EventSource('/stream');
+        source.onmessage = function(event) {
+            document.getElementById('content').innerHTML += event.data + '<br>';
+        };
+    </script>
+</body>
+</html>
