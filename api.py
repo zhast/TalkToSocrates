@@ -1,73 +1,86 @@
-import asyncio
+from flask import Flask, Response
+from flask_cors import CORS
 import pyaudio
-import numpy as np
-from fastapi import FastAPI, WebSocket
-from fastapi.responses import HTMLResponse
+import threading
+import queue
+import pydub
+import io
 
-app = FastAPI()
+app = Flask(__name__)
+CORS(app)
 
-CHUNK = 1024
-FORMAT = pyaudio.paFloat32  # Changed to float32
+# Audio stream configuration
+FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 44100
+CHUNK = 1024
 
-p = pyaudio.PyAudio()
-stream = p.open(format=FORMAT,
-                channels=CHANNELS,
-                rate=RATE,
-                input=True,
-                frames_per_buffer=CHUNK)
+# Initialize PyAudio
+audio = pyaudio.PyAudio()
+audio_stream = audio.open(format=FORMAT, channels=CHANNELS,
+                          rate=RATE, input=True,
+                          frames_per_buffer=CHUNK)
 
-@app.get("/")
-async def get():
-    html_content = """
+# Create a queue to hold audio data
+audio_queue = queue.Queue(maxsize=100)
+
+# Function to continuously read audio data
+def audio_capture():
+    while True:
+        try:
+            data = audio_stream.read(CHUNK, exception_on_overflow=False)
+            audio_queue.put(data, block=False)
+        except queue.Full:
+            try:
+                audio_queue.get_nowait()
+            except queue.Empty:
+                pass
+        except Exception as e:
+            print(f"Error capturing audio: {e}")
+
+# Start audio capture in a separate thread
+threading.Thread(target=audio_capture, daemon=True).start()
+
+@app.route('/stream')
+def stream_audio():
+    def generate():
+        accumulated_data = b''
+        while True:
+            try:
+                while len(accumulated_data) < RATE * 2:  # Accumulate ~1 second of audio
+                    data = audio_queue.get(timeout=1)
+                    accumulated_data += data
+                
+                # Convert to MP3
+                audio_segment = pydub.AudioSegment(
+                    accumulated_data,
+                    frame_rate=RATE,
+                    sample_width=2,
+                    channels=CHANNELS
+                )
+                mp3_buffer = io.BytesIO()
+                audio_segment.export(mp3_buffer, format="mp3", bitrate="64k")
+                mp3_data = mp3_buffer.getvalue()
+                
+                yield mp3_data
+                accumulated_data = b''
+            except queue.Empty:
+                yield b''
+
+    return Response(generate(), mimetype="audio/mpeg")
+
+@app.route('/')
+def index():
+    return """
     <html>
-        <head>
-            <title>Audio Streaming</title>
-        </head>
         <body>
-            <h1>Audio Streaming</h1>
-            <button id="startButton">Start Streaming</button>
-            <script>
-                let audioContext;
-                let socket;
-
-                document.getElementById('startButton').onclick = function() {
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                    socket = new WebSocket('ws://localhost:8000/ws');
-                    socket.binaryType = 'arraybuffer';
-                    
-                    socket.onmessage = function(event) {
-                        let floats = new Float32Array(event.data);
-                        let audioBuffer = audioContext.createBuffer(1, floats.length, 44100);
-                        audioBuffer.copyToChannel(floats, 0);
-                        
-                        let source = audioContext.createBufferSource();
-                        source.buffer = audioBuffer;
-                        source.connect(audioContext.destination);
-                        source.start();
-                    };
-                };
-            </script>
+            <audio controls>
+                <source src="/stream" type="audio/mpeg">
+                Your browser does not support the audio element.
+            </audio>
         </body>
     </html>
     """
-    return HTMLResponse(content=html_content)
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            data = stream.read(CHUNK, exception_on_overflow=False)
-            float_data = np.frombuffer(data, dtype=np.float32)
-            await websocket.send_bytes(float_data.tobytes())
-            await asyncio.sleep(0.01)
-    except Exception as e:
-        print(f"WebSocket error: {e}")
-    finally:
-        await websocket.close()
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000)

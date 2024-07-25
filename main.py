@@ -2,12 +2,12 @@
 from deepgram import DeepgramClient, DeepgramClientOptions, LiveTranscriptionEvents, LiveOptions
 import httpx
 import threading
+import os
 
-# The API key you created in step 1
-DEEPGRAM_API_KEY = 'b84398ccf57fe32938ae3c47960580d1e5378bca'
+DEEPGRAM_API_KEY = os.environ.get('DEEPGRAM_API_KEY')
 
 # URL for the real-time streaming audio you would like to transcribe
-URL = 'http://stream.live.vc.bbcmedia.co.uk/bbc_world_service'
+URL = 'http://localhost:8000/stream'
 
 def main():
     try:
